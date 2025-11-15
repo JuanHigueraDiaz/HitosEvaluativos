@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+# Proyecto ECO-SENSE 1.0
+# Script del Dashboard de visualización en Streamlit.
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import altair as alt
+import time
+import os
+
+# --- Configuración Global ---
+NOMBRE_ARCHIVO_CSV = 'historial_mediciones_robot.csv'
+TIEMPO_REFRESCO = 3
+
+LIMITE_TEMP_ALTA = 60.0
+LIMITE_CORRIENTE = 2.0
+LIMITE_TEMP_BAJA = 10.0
+LIMITE_AMARILLO_TEMP = 58.0
+LIMITE_AMARILLO_CORR = 1.8
+VOLTAJE_LINEA = 220
+
+# --- Configuración de la Página de Streamlit ---
+st.set_page_config(
+    page_title="Dashboard ECO-SENSE 1.0 (Híbrido)",
+    page_icon="🏭",
+    layout="wide"
+)
+
+st.title("🏭 Dashboard ECO-SENSE 1.0 (Datos Híbridos)")
+st.caption(f"T/H/V (Real) | Corriente/Piezas (Sim/Contado). (v5)")
+
+
+# --- Función para Cargar Datos (con caché) ---
+
+# El 'ttl=3' le dice a Streamlit que vuelva a cargar los datos
+# si han pasado más de 3 segundos.
+@st.cache_data(ttl=TIEMPO_REFRESCO)
+def cargar_datos(nombre_archivo):
+    # El dashboard espera un CSV con estas 7 columnas
+    columnas_esperadas = ['timestamp', 'lote', 'temperatura', 'humedad', 'voltaje_real', 'corriente_sim',
+                          'piezas_contadas']
+
+    if not os.path.exists(nombre_archivo):
+        return pd.DataFrame(columns=columnas_esperadas)
+    try:
+        df = pd.read_csv(nombre_archivo)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+        df = df.dropna(subset=['timestamp'])
+        return df
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=columnas_esperadas)
+    except Exception as e:
+        st.error(f"Error al cargar CSV: {e}")
+        return pd.DataFrame(columns=columnas_esperadas)
+
+
+# --- Cuerpo Principal del Dashboard ---
+
+df = cargar_datos(NOMBRE_ARCHIVO_CSV)
+
+if df.empty:
+    st.warning("Esperando los primeros datos... (Asegúrate de que el script del Robot esté corriendo)")
+    st.stop()
+
+try:
+    # Saca la última fila de datos para los semáforos
+    ultima_lectura = df.iloc[-1]
+    ultima_temp = ultima_lectura['temperatura']
+    ultima_hum = ultima_lectura['humedad']
+    ultima_volt = ultima_lectura['voltaje_real']
+    ultima_corr = ultima_lectura['corriente_sim']
+    ultimo_lote = ultima_lectura['lote']
+    ultimo_timestamp = ultima_lectura['timestamp'].strftime("%H:%M:%S")
+except IndexError:
+    st.warning("Archivo CSV encontrado, pero aún no hay lecturas de datos...")
+    st.stop()
+
+# Semáforos de Estado (KPIs)
+st.subheader("🚦 Semáforos de Estado")
+col_temp, col_corr, col_piezas = st.columns(3)
+
+with col_temp:
+    if ultima_temp >= LIMITE_TEMP_ALTA:
+        st.error(f"🔴 ALERTA ALTA: {ultima_temp:.1f} °C", icon="🔥")
+    elif ultima_temp <= LIMITE_TEMP_BAJA:
+        st.error(f"🔴 ALERTA BAJA: {ultima_temp:.1f} °C", icon="❄️")
+    elif ultima_temp >= LIMITE_AMARILLO_TEMP:
+        st.warning(f"🟡 ADVERTENCIA: {ultima_temp:.1f} °C", icon="⚠️")
+    else:
+        st.success(f"🟢 NORMAL T°: {ultima_temp:.1f} °C", icon="✅")
+
+with col_corr:
+    if ultima_corr >= LIMITE_CORRIENTE:
+        st.error(f"🔴 ALERTA I (Sim): {ultima_corr:.2f} A", icon="⚡")
+    elif ultima_corr >= LIMITE_AMARILLO_CORR:
+        st.warning(f"🟡 ADVERTENCIA I (Sim): {ultima_corr:.2f} A", icon="⚠️")
+    else:
+        st.success(f"🟢 NORMAL I (Sim): {ultima_corr:.2f} A", icon="✅")
+
+with col_piezas:
+    total_piezas = df['piezas_contadas'].sum()
+    st.metric(label="📦 Total Piezas (Contadas)", value=f"{total_piezas}")
+
+st.info(f"Última lectura: **{ultimo_lote}** a las **{ultimo_timestamp}**")
+st.divider()
+
+# Tabla de Últimas 3 Mediciones
+st.subheader("🕒 Últimas 3 Mediciones")
+st.dataframe(df.tail(3), use_container_width=True)
+st.divider()
+
+# Gráficos Históricos (T°, Humedad, Corriente)
+st.subheader("📈 Historial de Sensores")
+col_g1, col_g2, col_g3 = st.columns(3)
+
+with col_g1:
+    st.text("Gráfico de Temperatura (Real)")
+    chart_temp = alt.Chart(df).mark_line(point=True, color='orange').encode(
+        x=alt.X('timestamp', title='Tiempo'),
+        y=alt.Y('temperatura', title='Temperatura (°C)'),
+        tooltip=['timestamp', 'lote', 'temperatura']
+    ).interactive()
+    st.altair_chart(chart_temp, use_container_width=True)
+
+with col_g2:
+    st.text("Gráfico de Humedad (Real)")
+    chart_hum = alt.Chart(df).mark_line(point=True, color='green').encode(
+        x=alt.X('timestamp', title='Tiempo'),
+        y=alt.Y('humedad', title='Humedad (%)'),
+        tooltip=['timestamp', 'lote', 'humedad']
+    ).interactive()
+    st.altair_chart(chart_hum, use_container_width=True)
+
+with col_g3:
+    st.text("Gráfico de Corriente (Simulada)")
+    chart_corr = alt.Chart(df).mark_line(point=True, color='blue').encode(
+        x=alt.X('timestamp', title='Tiempo'),
+        y=alt.Y('corriente_sim', title='Corriente (A)'),
+        tooltip=['timestamp', 'lote', 'corriente_sim']
+    ).interactive()
+    st.altair_chart(chart_corr, use_container_width=True)
+st.divider()
+
+# Análisis de Promedios (Pandas)
+st.subheader("📊 Análisis de Promedios (Pandas/NumPy)")
+
+promedios_por_lote = df.groupby('lote')[
+    ['temperatura', 'humedad', 'voltaje_real', 'corriente_sim', 'piezas_contadas']].mean()
+
+# Calcula el kWh *estimado* para cada lote (basado en la pausa de 10s)
+PAUSA_MEDICION = 10
+promedios_por_lote['kWh_por_lote (Estimado)'] = \
+    (promedios_por_lote['corriente_sim'] * VOLTAJE_LINEA * PAUSA_MEDICION) / 3600000.0
+
+st.dataframe(promedios_por_lote, use_container_width=True)
+
+# Auto-Refresco
+time.sleep(TIEMPO_REFRESCO)
+st.rerun()
